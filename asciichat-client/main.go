@@ -86,10 +86,6 @@ func sendTerminalSize(ws *websocket.Conn, width, height int) {
 var latestRemoteFrame atomic.Value // stores string
 
 func main() {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "This program is intended for macOS")
-		os.Exit(1)
-	}
 
 	// Handle cli args
 	device := flag.Int("device", -1, "A device number from ffmpeg's list")
