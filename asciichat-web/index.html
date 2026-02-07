@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Terminal-first ASCII Video</title>
+    <style>
+        body {
+            background: black;
+            color: white;
+            font-family: monospace;
+            white-space: pre;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        video {
+            display: none;
+        }
+
+        #ansi,
+        #remote-ansi {
+            line-height: 80%;
+        }
+    </style>
+</head>
+
+<body>
+    <video id="video" autoplay></video>
+    <pre id="ansi"></pre>
+    <pre id="remote-ansi"></pre>
+
+    <script>
+        const ws = new WebSocket("ws://localhost:8080/ws");
+        const chars = " .:-=+*#%@";
+        const video = document.getElementById("video");
+        const localPre = document.getElementById("ansi");
+        const remotePre = document.getElementById("remote-ansi");
+        const WIDTH = 80;
+        const HEIGHT = 60;
+
+        // Get webcam
+        navigator.mediaDevices.getUserMedia({video: true}).then(stream => {
+            video.srcObject = stream;
+        });
+
+        // Convert video frame to ANSI
+        function frameToANSI() {
+            const canvas = document.createElement("canvas");
+            canvas.width = WIDTH;
+            canvas.height = HEIGHT;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let ansi = "";
+
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    const i = (y * WIDTH + x) * 4;
+                    const r = img[i], g = img[i + 1], b = img[i + 2];
+                    const brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                    const c = chars[Math.floor(brightness * (chars.length - 1))];
+                    ansi += `\x1b[38;2;${r};${g};${b}m${c}\x1b[0m`;
+                }
+                ansi += "\n";
+            }
+            return ansi;
+        }
+
+        // Render ANSI in a <pre>
+        function renderANSI(pre, ansiString) {
+            pre.innerHTML = ansiString
+                .replace(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g, (_, r, g, b) =>
+                    `<span style="color:rgb(${r},${g},${b})">`)
+                .replace(/\x1b\[0m/g, "</span>")
+                .replace(/\n/g, "\n");
+        }
+
+        // Send frames ~12fps
+        setInterval(() => {
+            if (video.readyState >= 2 && ws.readyState === WebSocket.OPEN) {
+                const frame = frameToANSI();
+                ws.send(JSON.stringify({type: "frame", frame}));
+                renderANSI(localPre, frame); // show local feed
+            }
+        }, 80);
+
+        // Listen for remote frames
+        ws.onmessage = (evt) => {
+            try {
+                const msg = JSON.parse(evt.data);
+                if (msg.type === "frame") {
+                    renderANSI(remotePre, msg.frame);
+                }
+            } catch (e) {
+                console.error("Failed to parse remote frame", e);
+            }
+        };
+
+        ws.onopen = () => console.log("WebSocket connected");
+        ws.onclose = () => console.log("WebSocket disconnected");
+    </script>
+</body>
+
+</html>

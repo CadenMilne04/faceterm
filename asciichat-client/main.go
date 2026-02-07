@@ -75,16 +75,15 @@ func main() {
 	}
 
 	// Handle cli args
-    device := flag.Int("device", -1, "A device number from ffmpeg's list")
+	device := flag.Int("device", -1, "A device number from ffmpeg's list")
 	flag.Parse()
 
-    // Check required integer flags
-    if *device == -1 {
-        fmt.Fprintln(os.Stderr, "Error: -device flag is required")
-        flag.Usage()
-        os.Exit(1)
-    }
-
+	// Check required integer flags
+	if *device == -1 {
+		fmt.Fprintln(os.Stderr, "Error: -device flag is required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	// Handle Ctrl+C gracefully
 	c := make(chan os.Signal, 1)
@@ -187,19 +186,9 @@ func main() {
 			}
 		}
 
-		// Read and display the latest frame from other client
-		// if f := latestRemoteFrame.Load(); f != nil {
-		// 	fmt.Print("\033[H")
-		// 	fmt.Print(f.(string))
-		// }
-
 		// Send a frame to the other client
 		frame := processFrame(img, width, height)
 		frameChannel <- frame
-
-		// Move cursor to top-left and print
-		// fmt.Print("\033[H")
-		// fmt.Print(frame)
 
 		// Limit FPS (~30)
 		time.Sleep(33 * time.Millisecond)
