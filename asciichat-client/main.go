@@ -1,25 +1,90 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
+	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"gocv.io/x/gocv"
 	"golang.org/x/term"
 )
 
+// connectWS connects to the given ws:// or wss:// URL and returns the connection
+func connectWS(addr string) *websocket.Conn {
+	u := url.URL{Scheme: "ws", Host: addr, Path: "/ws"}
+	log.Printf("connecting to %s", u.String())
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Fatalf("failed to connect to websocket: %v", err)
+	}
+	return c
+}
+
 var asciiChars = []byte(" .:-=+*#%@")
+
+type MessageType string
+
+const (
+	MsgTypeSize  MessageType = "size"
+	MsgTypeFrame MessageType = "frame"
+)
+
+const serverAddress = "localhost:8080"
+
+type Message struct {
+	Type   MessageType `json:"type"`
+	Width  int         `json:"width,omitempty"`
+	Height int         `json:"height,omitempty"`
+	Frame  string      `json:"frame,omitempty"`
+}
+
+func processFrame(img gocv.Mat, width, height int) string {
+	// Flip horizontally (mirror)
+	flipped := gocv.NewMat()
+	gocv.Flip(img, &flipped, 1)
+	defer flipped.Close()
+
+	// Resize to terminal size (*2 for aspect correction)
+	resized := gocv.NewMat()
+	gocv.Resize(flipped, &resized, image.Point{X: width, Y: height * 2}, 0, 0, gocv.InterpolationArea)
+	defer resized.Close()
+
+	// Convert to ASCII
+	ascii := matToASCIIColor(resized)
+
+	return ascii
+}
+
+var latestRemoteFrame atomic.Value // stores string
 
 func main() {
 	if runtime.GOOS != "darwin" {
 		fmt.Fprintln(os.Stderr, "This program is intended for macOS")
 		os.Exit(1)
 	}
+
+	// Handle cli args
+    device := flag.Int("device", -1, "A device number from ffmpeg's list")
+	flag.Parse()
+
+    // Check required integer flags
+    if *device == -1 {
+        fmt.Fprintln(os.Stderr, "Error: -device flag is required")
+        flag.Usage()
+        os.Exit(1)
+    }
+
 
 	// Handle Ctrl+C gracefully
 	c := make(chan os.Signal, 1)
@@ -32,8 +97,11 @@ func main() {
 		os.Exit(0)
 	}()
 
+	ws := connectWS(serverAddress)
+	defer ws.Close()
+
 	// Open GoCV webcam
-	webcam, err := gocv.OpenVideoCapture(1)
+	webcam, err := gocv.OpenVideoCapture(*device)
 	if err != nil || !webcam.IsOpened() {
 		panic("Unable to open webcam")
 	}
@@ -56,12 +124,55 @@ func main() {
 		}
 	}
 
+	// channel for frames to send
+	frameChannel := make(chan string)
+
+	// goroutine: continuously read frames from WS
+	go func() {
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				log.Println("read error:", err)
+				return
+			}
+
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				log.Println("json unmarshal error:", err)
+				continue
+			}
+
+			switch msg.Type {
+			case MsgTypeFrame:
+				// move cursor to top-left
+				print("\033[H")
+				print(msg.Frame)
+			case MsgTypeSize:
+				// handle remote terminal size
+				width = msg.Width
+				height = msg.Height
+			}
+		}
+	}()
+
+	// goroutine: continuously send frames from frameCh
+	go func() {
+		for f := range frameChannel {
+			msg := Message{
+				Type:  "frame",
+				Frame: f,
+			}
+			b, _ := json.Marshal(msg)
+			if err := ws.WriteMessage(websocket.TextMessage, b); err != nil {
+				log.Println("write error:", err)
+				return
+			}
+		}
+	}()
+
 	// Create Mat for webcam frames
 	img := gocv.NewMat()
 	defer img.Close()
-
-	var last time.Time
-	fps := 0
 
 	for {
 		if ok := webcam.Read(&img); !ok || img.Empty() {
@@ -69,7 +180,6 @@ func main() {
 		}
 
 		// Detect terminal size
-		// width, height := 80, 40
 		if term.IsTerminal(int(os.Stdout.Fd())) {
 			if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
 				width = w - 1
@@ -77,30 +187,19 @@ func main() {
 			}
 		}
 
-		// Resize frame to terminal size using image.Point
+		// Read and display the latest frame from other client
+		// if f := latestRemoteFrame.Load(); f != nil {
+		// 	fmt.Print("\033[H")
+		// 	fmt.Print(f.(string))
+		// }
 
-		flipped := gocv.NewMat()
-		gocv.Flip(img, &flipped, 1)
-
-		resized := gocv.NewMat()
-		gocv.Resize(flipped, &resized, image.Point{X: width, Y: height * 2}, 0, 0, gocv.InterpolationArea)
-
-		ascii := matToASCII(resized)
-
-		flipped.Close()
-		resized.Close()
+		// Send a frame to the other client
+		frame := processFrame(img, width, height)
+		frameChannel <- frame
 
 		// Move cursor to top-left and print
-		fmt.Print("\033[H")
-		fmt.Print(ascii)
-
-		// Show FPS
-		fps++
-		if time.Since(last) >= time.Second {
-			fmt.Printf("\033[%d;1HFPS: %d\n", height, fps)
-			fps = 0
-			last = time.Now()
-		}
+		// fmt.Print("\033[H")
+		// fmt.Print(frame)
 
 		// Limit FPS (~30)
 		time.Sleep(33 * time.Millisecond)
