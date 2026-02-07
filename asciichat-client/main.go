@@ -2,13 +2,15 @@ package main
 
 import (
 	"fmt"
-	"gocv.io/x/gocv"
-	"golang.org/x/term"
 	"image"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"time"
+
+	"gocv.io/x/gocv"
+	"golang.org/x/term"
 )
 
 var asciiChars = []byte(" .:-=+*#%@")
@@ -66,11 +68,26 @@ func main() {
 			continue
 		}
 
+		// Detect terminal size
+		// width, height := 80, 40
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+				width = w - 1
+				height = h - 1
+			}
+		}
+
 		// Resize frame to terminal size using image.Point
+
+		flipped := gocv.NewMat()
+		gocv.Flip(img, &flipped, 1)
+
 		resized := gocv.NewMat()
-		gocv.Resize(img, &resized, image.Point{X: width, Y: height * 2}, 0, 0, gocv.InterpolationArea)
+		gocv.Resize(flipped, &resized, image.Point{X: width, Y: height * 2}, 0, 0, gocv.InterpolationArea)
 
 		ascii := matToASCII(resized)
+
+		flipped.Close()
 		resized.Close()
 
 		// Move cursor to top-left and print
@@ -104,4 +121,33 @@ func matToASCII(mat gocv.Mat) string {
 		out = append(out, '\n')
 	}
 	return string(out)
+}
+
+func matToASCIIColor(mat gocv.Mat) string {
+	rows, cols := mat.Rows(), mat.Cols()
+
+	var b strings.Builder
+	b.Grow(rows * cols * 10) // avoid reallocs
+
+	for y := 0; y < rows; y += 2 {
+		for x := 0; x < cols; x++ {
+			c := mat.GetVecbAt(y, x) // BGR
+
+			bb := c[0]
+			gg := c[1]
+			rr := c[2]
+
+			// luminance → ascii
+			lum := 0.0722*float64(bb) + 0.7152*float64(gg) + 0.2126*float64(rr)
+			idx := int(lum / 256 * float64(len(asciiChars)-1))
+			ch := asciiChars[idx]
+
+			// 24-bit foreground color
+			fmt.Fprintf(&b, "\033[38;2;%d;%d;%dm%c", rr, gg, bb, ch)
+		}
+		b.WriteByte('\n')
+	}
+
+	b.WriteString("\033[0m") // reset color
+	return b.String()
 }
