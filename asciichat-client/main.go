@@ -21,7 +21,7 @@ import (
 
 // connectWS connects to the given ws:// or wss:// URL and returns the connection
 func connectWS(addr string) *websocket.Conn {
-	u := url.URL{Scheme: "ws", Host: addr, Path: "/ws"}
+	u := url.URL{Scheme: "wss", Host: addr, Path: "/ws"}
 	log.Printf("connecting to %s", u.String())
 
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -40,7 +40,7 @@ const (
 	MsgTypeFrame MessageType = "frame"
 )
 
-const serverAddress = "localhost:8080"
+const serverAddress = "asciichat.cadenmilne.com"
 
 type Message struct {
 	Type   MessageType `json:"type"`
@@ -69,6 +69,18 @@ func processFrame(img gocv.Mat, width, height int, color bool) string {
 	}
 
 	return ascii
+}
+
+func sendTerminalSize(ws *websocket.Conn, width, height int) {
+	msg := Message{
+		Type:   MsgTypeSize,
+		Width:  width,
+		Height: height,
+	}
+	b, _ := json.Marshal(msg)
+	if err := ws.WriteMessage(websocket.TextMessage, b); err != nil {
+		log.Println("write size error:", err)
+	}
 }
 
 var latestRemoteFrame atomic.Value // stores string
@@ -120,7 +132,7 @@ func main() {
 		fmt.Print("\033[?1049l") // exit alt screen
 	}()
 
-	// Detect terminal size
+	// Initialize terminal size as this clients size, later it will update w + h from other client
 	width, height := 80, 40
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
@@ -132,7 +144,7 @@ func main() {
 	// channel for frames to send
 	frameChannel := make(chan string)
 
-	// goroutine: continuously read frames from WS
+	// goroutine: continuously read messages from WS
 	go func() {
 		for {
 			_, data, err := ws.ReadMessage()
@@ -175,6 +187,23 @@ func main() {
 		}
 	}()
 
+	// goroutine: periodically send terminal size
+	go func() {
+		var lastW, lastH int
+		for {
+			if term.IsTerminal(int(os.Stdout.Fd())) {
+				w, h, err := term.GetSize(int(os.Stdout.Fd()))
+				if err == nil {
+					if w != lastW || h != lastH {
+						sendTerminalSize(ws, w-1, h-1) // minus 1 to match your frame resizing
+						lastW, lastH = w, h
+					}
+				}
+			}
+			time.Sleep(500 * time.Millisecond) // adjust frequency as needed
+		}
+	}()
+
 	// Create Mat for webcam frames
 	img := gocv.NewMat()
 	defer img.Close()
@@ -182,14 +211,6 @@ func main() {
 	for {
 		if ok := webcam.Read(&img); !ok || img.Empty() {
 			continue
-		}
-
-		// Detect terminal size
-		if term.IsTerminal(int(os.Stdout.Fd())) {
-			if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-				width = w - 1
-				height = h - 1
-			}
 		}
 
 		// Send a frame to the other client
