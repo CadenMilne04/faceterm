@@ -49,7 +49,7 @@ type Message struct {
 	Frame  string      `json:"frame,omitempty"`
 }
 
-func processFrame(img gocv.Mat, width, height int) string {
+func processFrame(img gocv.Mat, width, height int, color bool) string {
 	// Flip horizontally (mirror)
 	flipped := gocv.NewMat()
 	gocv.Flip(img, &flipped, 1)
@@ -61,7 +61,12 @@ func processFrame(img gocv.Mat, width, height int) string {
 	defer resized.Close()
 
 	// Convert to ASCII
-	ascii := matToASCIIColor(resized)
+	var ascii string
+	if color {
+		ascii = matToASCIIColor(resized)
+	} else {
+		ascii = matToASCII(resized)
+	}
 
 	return ascii
 }
@@ -76,6 +81,7 @@ func main() {
 
 	// Handle cli args
 	device := flag.Int("device", -1, "A device number from ffmpeg's list")
+	color := flag.Bool("color", false, "Use color or not?")
 	flag.Parse()
 
 	// Check required integer flags
@@ -187,7 +193,7 @@ func main() {
 		}
 
 		// Send a frame to the other client
-		frame := processFrame(img, width, height)
+		frame := processFrame(img, width, height, *color)
 		frameChannel <- frame
 
 		// Limit FPS (~30)

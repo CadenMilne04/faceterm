@@ -3,35 +3,104 @@
 
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Terminal-first ASCII Video</title>
     <style>
         body {
-            background: black;
-            color: white;
+            background: #111;
+            color: #eee;
             font-family: monospace;
             white-space: pre;
             margin: 0;
-            padding: 0;
+            padding: 20px;
             display: flex;
             flex-direction: column;
             align-items: center;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+            font-size: 1.5rem;
+            color: #0f0;
+        }
+
+        #controls {
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: center;
+            /* centers horizontally */
+            align-items: center;
+            /* centers vertically if needed */
+        }
+
+        button {
+            background: #0f0;
+            color: #111;
+            border: none;
+            padding: 10px 20px;
+            font-family: monospace;
+            font-size: 1rem;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #0c0;
         }
 
         video {
             display: none;
         }
 
-        #ansi,
-        #remote-ansi {
+        #ascii-container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        pre {
+            background: #000;
+            padding: 10px;
+            border-radius: 5px;
             line-height: 80%;
+            font-size: 8px;
+            overflow: auto;
+            max-width: 600px;
+            max-height: 400px;
+        }
+
+        #local-label,
+        #remote-label {
+            text-align: center;
+            margin-top: 5px;
+            color: #0f0;
+            font-size: 0.85rem;
         }
     </style>
 </head>
 
 <body>
+    <h1>Terminal-first ASCII Video</h1>
+
+    <div id="controls">
+        <button id="startBtn">Start Webcam</button>
+    </div>
+
+    <div id="ascii-container">
+        <div>
+            <pre id="ansi"></pre>
+            <div id="local-label">Local Feed</div>
+        </div>
+        <div>
+            <pre id="remote-ansi"></pre>
+            <div id="remote-label">Remote Feed</div>
+        </div>
+    </div>
+
     <video id="video" autoplay></video>
-    <pre id="ansi"></pre>
-    <pre id="remote-ansi"></pre>
 
     <script>
         const ws = new WebSocket("ws://localhost:8080/ws");
@@ -39,66 +108,68 @@
         const video = document.getElementById("video");
         const localPre = document.getElementById("ansi");
         const remotePre = document.getElementById("remote-ansi");
-        const WIDTH = 80;
-        const HEIGHT = 60;
+        const WIDTH = 144;
+        const HEIGHT = 38;
 
-        // Get webcam
-        navigator.mediaDevices.getUserMedia({video: true}).then(stream => {
-            video.srcObject = stream;
-        });
+        let streaming = false;
 
-        // Convert video frame to ANSI
+        // Convert frame to black-and-white ASCII
         function frameToANSI() {
             const canvas = document.createElement("canvas");
             canvas.width = WIDTH;
             canvas.height = HEIGHT;
             const ctx = canvas.getContext("2d");
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            ctx.drawImage(video, 0, 0, WIDTH, HEIGHT);
+            const img = ctx.getImageData(0, 0, WIDTH, HEIGHT).data;
             let ansi = "";
-
             for (let y = 0; y < HEIGHT; y++) {
                 for (let x = 0; x < WIDTH; x++) {
                     const i = (y * WIDTH + x) * 4;
                     const r = img[i], g = img[i + 1], b = img[i + 2];
                     const brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                    const c = chars[Math.floor(brightness * (chars.length - 1))];
-                    ansi += `\x1b[38;2;${r};${g};${b}m${c}\x1b[0m`;
+                    ansi += chars[Math.floor(brightness * (chars.length - 1))];
                 }
                 ansi += "\n";
             }
             return ansi;
         }
 
-        // Render ANSI in a <pre>
-        function renderANSI(pre, ansiString) {
-            pre.innerHTML = ansiString
-                .replace(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g, (_, r, g, b) =>
-                    `<span style="color:rgb(${r},${g},${b})">`)
-                .replace(/\x1b\[0m/g, "</span>")
-                .replace(/\n/g, "\n");
+        // Render ASCII to <pre>
+        function renderANSI(pre, str) {
+            pre.textContent = str;
         }
 
-        // Send frames ~12fps
-        setInterval(() => {
-            if (video.readyState >= 2 && ws.readyState === WebSocket.OPEN) {
-                const frame = frameToANSI();
-                ws.send(JSON.stringify({type: "frame", frame}));
-                renderANSI(localPre, frame); // show local feed
-            }
-        }, 80);
+        function startStreaming() {
+            if (streaming) return;
+            streaming = true;
+
+            navigator.mediaDevices.getUserMedia({video: true}).then(stream => {
+                video.srcObject = stream;
+
+                // Send frames ~12 FPS
+                setInterval(() => {
+                    if (video.readyState >= 2 && ws.readyState === WebSocket.OPEN) {
+                        const frame = frameToANSI();
+                        ws.send(JSON.stringify({type: "frame", frame}));
+                        renderANSI(localPre, frame);
+                    }
+                }, 80);
+            }).catch(err => {
+                alert("Failed to access webcam: " + err);
+            });
+        }
 
         // Listen for remote frames
         ws.onmessage = (evt) => {
             try {
                 const msg = JSON.parse(evt.data);
-                if (msg.type === "frame") {
-                    renderANSI(remotePre, msg.frame);
-                }
+                if (msg.type === "frame") renderANSI(remotePre, msg.frame);
             } catch (e) {
                 console.error("Failed to parse remote frame", e);
             }
         };
+
+        document.getElementById("startBtn").addEventListener("click", startStreaming);
 
         ws.onopen = () => console.log("WebSocket connected");
         ws.onclose = () => console.log("WebSocket disconnected");
