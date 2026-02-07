@@ -142,7 +142,7 @@ func main() {
 	}
 
 	// channel for frames to send
-	frameChannel := make(chan string)
+	// frameChannel := make(chan string)
 
 	// goroutine: continuously read messages from WS
 	go func() {
@@ -173,49 +173,72 @@ func main() {
 	}()
 
 	// goroutine: continuously send frames from frameCh
-	go func() {
-		for f := range frameChannel {
-			msg := Message{
-				Type:  "frame",
-				Frame: f,
-			}
+	// go func() {
+	// 	for f := range frameChannel {
+	// 		msg := Message{
+	// 			Type:  "frame",
+	// 			Frame: f,
+	// 		}
+	// 		b, _ := json.Marshal(msg)
+	// 		if err := ws.WriteMessage(websocket.TextMessage, b); err != nil {
+	// 			log.Println("write error:", err)
+	// 			return
+	// 		}
+	// 	}
+	// }()
+
+	// goroutine: periodically send terminal size
+	// go func() {
+	// 	var lastW, lastH int
+	// 	for {
+	// 		if term.IsTerminal(int(os.Stdout.Fd())) {
+	// 			w, h, err := term.GetSize(int(os.Stdout.Fd()))
+	// 			if err == nil {
+	// 				if w != lastW || h != lastH {
+	// 					sendTerminalSize(ws, w-1, h-1) // minus 1 to match your frame resizing
+	// 					lastW, lastH = w, h
+	// 				}
+	// 			}
+	// 		}
+	// 		time.Sleep(500 * time.Millisecond) // adjust frequency as needed
+	// 	}
+	// }()
+
+	// Create Mat for webcam frames
+	img := gocv.NewMat()
+	defer img.Close()
+
+	lastW, lastH := width, height // initialize
+	for {
+		if ok := webcam.Read(&img); !ok || img.Empty() {
+			continue
+		}
+
+		// Get current terminal size
+		if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+			width = w - 1
+			height = h - 1
+		}
+
+		// Prepare messages
+		msgs := []Message{
+			{Type: MsgTypeFrame, Frame: processFrame(img, width, height, *color)},
+		}
+
+		// Only send terminal size if changed
+		if width != lastW || height != lastH {
+			msgs = append(msgs, Message{Type: MsgTypeSize, Width: width, Height: height})
+			lastW, lastH = width, height
+		}
+
+		// Send all messages sequentially (single goroutine)
+		for _, msg := range msgs {
 			b, _ := json.Marshal(msg)
 			if err := ws.WriteMessage(websocket.TextMessage, b); err != nil {
 				log.Println("write error:", err)
 				return
 			}
 		}
-	}()
-
-	// goroutine: periodically send terminal size
-	go func() {
-		var lastW, lastH int
-		for {
-			if term.IsTerminal(int(os.Stdout.Fd())) {
-				w, h, err := term.GetSize(int(os.Stdout.Fd()))
-				if err == nil {
-					if w != lastW || h != lastH {
-						sendTerminalSize(ws, w-1, h-1) // minus 1 to match your frame resizing
-						lastW, lastH = w, h
-					}
-				}
-			}
-			time.Sleep(500 * time.Millisecond) // adjust frequency as needed
-		}
-	}()
-
-	// Create Mat for webcam frames
-	img := gocv.NewMat()
-	defer img.Close()
-
-	for {
-		if ok := webcam.Read(&img); !ok || img.Empty() {
-			continue
-		}
-
-		// Send a frame to the other client
-		frame := processFrame(img, width, height, *color)
-		frameChannel <- frame
 
 		// Limit FPS (~30)
 		time.Sleep(33 * time.Millisecond)
